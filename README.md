@@ -28,7 +28,9 @@ on bad input.
   prints `{"ok": false, "error": "no data for day N; nothing was changed"}` and leaves the store as it
   was, including for `--day 1`, which would otherwise start a fresh store and erase the good one.
 - Times (`ask --at`) without an offset are UTC. Offsets such as `+05:30` and `+0530` are honoured on every
-  Python version. A time that cannot be read is taken as "now".
+  Python version. A time that cannot be read (`garbage`, `2027-13-45T00:00:00Z`) is not guessed at: the
+  answer is "I have nothing on that.", because without a moment for the question there is no honest
+  "nothing later than the question" cutoff.
 
 The records and extracted facts are the source of truth, because later briefs and answers need their
 history and citations. The output cache keeps up to 512 recent JSON results; the model cache keeps up

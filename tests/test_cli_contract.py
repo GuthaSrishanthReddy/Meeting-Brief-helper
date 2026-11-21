@@ -192,5 +192,42 @@ class IngestOnlyRealDaysTests(CliBase):
         self.assertEqual(self.last_day_and_days(), (3, [1, 2, 3]))
 
 
+class AskNeedsAReadableTimeTests(CliBase):
+    """An unreadable --at used to become "now" with no time cutoff at all, so a question could be answered
+    from records written after the moment it was supposedly asked. It now answers nothing."""
+    Q = 'Who owns billing for Acme?'
+
+    def ask(self, at):
+        out, _ = self.cli('ask', '--person', 'a02', '--at', at, '--ask', self.Q)
+        return out
+
+    def test_a_readable_time_still_gets_the_real_answer(self):
+        self.ingest(1, 2, 3)
+        out = self.ask('2027-03-24T18:00:00Z')
+        self.assertNotEqual(out['answer']['text'], 'I have nothing on that.')
+        self.assertTrue(out['answer']['sources'])
+        for at in ('2027-03-24T18:00:00+0000', '2027-03-24 18:00', '2027-03-24T23:30:00+05:30'):
+            self.assertEqual(self.ask(at)['answer']['text'], out['answer']['text'], at)
+
+    def test_an_unreadable_time_answers_nothing_and_reads_nothing(self):
+        self.ingest(1, 2, 3)
+        for at in ('garbage', '', 'tomorrow', '2027-13-45T00:00:00Z', '1711303200', '2027/03/24 18:00', '2027-03-24T18:00:00+25:00'):
+            out = self.ask(at)
+            self.assertEqual(out['answer'], {'text': 'I have nothing on that.', 'sources': []}, repr(at))
+            self.assertEqual(out['matched'], [], repr(at))
+            self.assertIsNone(out['clarify'])
+            self.assertIsNone(out['refused'])
+            self.assertEqual(out['usage']['input_tokens'], 0)
+            self.assertEqual(out['usage']['output_tokens'], 0)
+
+    def test_the_time_cutoff_still_holds_for_a_readable_time(self):
+        self.ingest(1, 2, 3)
+        # before the announcement (day 2, 04:00 UTC) the answer cannot cite it
+        early = self.ask('2027-03-22T20:00:00Z')
+        late = self.ask('2027-03-24T18:00:00Z')
+        self.assertNotEqual(early['answer'], late['answer'])
+        self.assertNotIn('xann1', early['answer']['sources'])
+
+
 if __name__ == '__main__':
     unittest.main()

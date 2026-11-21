@@ -20,7 +20,7 @@ import re
 from . import owners, promises, retrieve
 from .clients import ClientResolver, match_tasks, pick_task, task_states
 from .common import (Clients, WEEKDAY_NUM, canon_ts, content_words, dedupe, find_dates, fmt_dm, fmt_dmy,
-                     local_date, local_day_end_utc, parse_day, parse_ts, sentences, words)
+                     local_date, local_day_end_utc, log, parse_day, parse_ts, sentences, words)
 from .guard import NOTHING, Guard, build_superseded, history_from_facts, record_text
 from .llm import LLM, data_block
 
@@ -598,6 +598,11 @@ def answer(ctx):
 
 
 def run(store, person, at_iso, question):
+    if not parse_ts(at_iso):
+        # No moment for the question means no honest "nothing later than the question" cutoff, and the
+        # whole time cutoff would silently switch off. Answer nothing, and read nothing.
+        log('ask: %r is not a time the question can be placed at; answering nothing' % (at_iso,))
+        return nothing(), LLM(store, 'ask', budget=4000)
     ctx = Ctx(store, person, at_iso, question)
     out = ctx.guard.answer(answer(ctx))
     return out, ctx.llm
