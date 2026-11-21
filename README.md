@@ -86,6 +86,17 @@ Measured against a provider that hangs for 60 s on every request, with a 15 s bu
 took 15.5 s and exited 0, and an odd-phrasing `ask` took 15.4 s and answered "I have nothing on that."
 Skipped calls are counted in the `ingest` output (`model_calls_skipped`, `model_pending`).
 
+### Watchdog: a stuck command still answers
+
+If a command has printed nothing after `R3_WATCHDOG_S` seconds (default 100, `0` turns it off), whatever
+it is stuck on (a locked database file, a hung network call), it prints the safe fallback JSON and exits
+0 instead of being killed at 120 s with no output: `[]` for `brief`, "I have nothing on that." with zero
+usage for `ask`, and `{"ok": false, "error": "timed out ..."}` for `ingest` and `forget`. Committed data
+is unaffected (SQLite rolls an interrupted transaction back on the next open). This was added after a
+test run in which one `ask` child process ran past 120 s on Python 3.14, which could not be reproduced
+afterwards; the cause is unconfirmed, and the test for the watchdog holds the store's database lock to
+reproduce the most likely one.
+
 ### Running it with an OpenAI key (for the evaluator)
 
 Create a `.env` file next to `assist.py` (the repository does not contain one) with:
@@ -207,6 +218,33 @@ margin (0.664 vs 0.599 with the task type, 0.614 vs 0.580 without), and `embedCo
 is silently ignored by the API while a per-request `taskType` is honoured. So embeddings only re-rank
 what BM25 found; they never decide on their own. On days 1 to 5 no question needs this path, so the
 score is unchanged (85.0/85) and all 39 outputs are identical with it on.
+
+## Optional summary: `brief --summary`
+
+```
+python3 assist.py brief --person p12 --date 2026-11-06 --summary
+```
+
+Without the flag nothing changes: same JSON, same cache entry, no `summary` key. With it, each meeting
+gets a `"summary": {"text": "...", "sources": ["r..."]}` written by the model **from that brief's own
+approved `changed`, `promises` and `open_these` lines only**. The model never sees a record, only the
+finished, guard-checked lines (each with its source ids), as quoted data.
+
+A summary is kept only if it passes every check, and is rejected whole (never trimmed) otherwise:
+- valid JSON with a text and a list of ids; every id is one of the ids of the lines that were sent, and
+  still citable (visible, a citable kind, not forgotten or suppressed);
+- the guard's rules: no forgotten or suppressed topic, no stale value (an old owner or date without the
+  current one), no status word such as "AT RISK" that no cited record says;
+- a lexical grounding check: no number and no name that the approved lines do not contain. This is a
+  conservative heuristic: it can reject a good paraphrase (the safe direction), and it cannot catch a
+  wrong claim built only from words the lines already contain.
+
+If the model is off, over its token or time budget, unreachable, or answers badly, the brief is
+returned exactly as normal with `"summary": null`. A meeting with nothing new gets `null` with no model
+call. `usage` is that meeting's own model usage from the API (a cached reply counts 0); `ms` is the
+elapsed time of the command. The summarised output has its own cache key, and is cached only when every
+meeting got a summary, so an API error is never frozen into the cache as `null`. The flag exists on
+`brief` only; on any other command it is rejected like any bad argument.
 
 ## Scale
 

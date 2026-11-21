@@ -130,6 +130,25 @@ class Guard(object):
         out.update(status='brief', changed=changed, promises=proms, open_these=opens[:3], question_to_ask=q)
         return out
 
+    def summary(self, text, ids, allowed):
+        """A model-written meeting summary through the same checks as every other line, or None.
+
+        `allowed` is the set of source ids of the lines the model was shown for this meeting. Every cited
+        id must be in it, and still citable (visible, a citable kind, not forgotten or suppressed). The
+        text must have no forgotten or suppressed topic, no stale value without its current one, and no
+        status word that no cited record says. Anything else is rejected whole, never trimmed to fit.
+        """
+        if not isinstance(text, str) or not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            return None
+        text = ' '.join(text.split())
+        ids = dedupe(ids)
+        if not text or not ids or any(i not in allowed for i in ids):
+            return None
+        ok = self.sources(ids)
+        if ok != ids or not self.line_ok(text, ok):
+            return None
+        return {'text': text, 'sources': ok}
+
     def answer(self, a):
         matched = []
         for m in a.get('matched') or []:

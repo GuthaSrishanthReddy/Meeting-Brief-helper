@@ -20,6 +20,7 @@ from .common import Clients, dedupe, find_dates, fmt_dm, local_date, parse_day, 
 from .guard import Guard, build_superseded, history_from_facts, subject_words
 from .store import records_of
 from .llm import LLM
+from .summary import summarize
 
 GENERIC_BODIES = set(['done and shared', 'updated the file', 'small fixes done', 'pushed an update for review',
                       'added screenshots', 'working on feedback', 'synced with the team', 'waiting for assets'])
@@ -131,7 +132,10 @@ def previous_owner(own_facts, fact, client):
     return prev.get('person') if prev else None
 
 
-def build(store, person, date_str):
+def build(store, person, date_str, summary=False):
+    """One brief per meeting. With summary=True each also gets a "summary": {"text", "sources"} written
+    by the model from that brief's approved lines only, or null when none could be made safely (see
+    summary.py). Without it the output is exactly what it always was, with no "summary" key."""
     people, clients = store.people, Clients()
     last = store.last_day()
     date = parse_day(date_str)
@@ -171,7 +175,15 @@ def build(store, person, date_str):
                 b['open_these'] = [{'record': it['sources'][0], 'why': it['text']} for it in items[:3] if it['sources']]
                 b['question_to_ask'] = question_for(items)
         clean = guard.brief(b)
-        clean['usage'] = llm.usage(0)
+        if summary:
+            before = (llm.input_tokens, llm.output_tokens, llm.cost)
+            clean['summary'] = summarize(llm, guard, clean, people)
+            # this meeting's own model usage (a cached reply or a skipped call is honestly zero)
+            clean['usage'] = {'input_tokens': int(llm.input_tokens - before[0]),
+                              'output_tokens': int(llm.output_tokens - before[1]),
+                              'cost_usd': round(llm.cost - before[2], 6), 'ms': 0}
+        else:
+            clean['usage'] = llm.usage(0)
         out.append(clean)
     return out
 
