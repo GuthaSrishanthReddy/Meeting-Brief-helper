@@ -8,6 +8,7 @@ Standard library only (urllib), so requirements.txt stays empty.
            the numbers we report come from the API's usageMetadata
 - usage    input = promptTokenCount, output = candidatesTokenCount + thoughtsTokenCount
 - cache    results are cached by prompt hash, so a repeated question costs tokens once
+- retry    429/5xx/timeouts are retried twice (1.5 s, 3 s) inside a 60 s deadline (R3_LLM_DEADLINE)
 - fallback any failure (no key, network, timeout, bad JSON) returns None and the code-only
            path answers; a command never fails because of the model
 
@@ -111,6 +112,30 @@ class LLM(object):
             'generationConfig': gen,
         }
 
+    def _post_retry(self, body):
+        """Retry throttling, overload and timeouts (429/5xx/network) twice, within a deadline.
+
+        A 400 is raised at once (the caller retries it once without optional fields).
+        """
+        try:
+            deadline = time.time() + float(os.environ.get('R3_LLM_DEADLINE') or 60)
+        except ValueError:
+            deadline = time.time() + 60
+        delays = (1.5, 3.0)
+        for attempt in range(3):
+            try:
+                return self._post(body)
+            except urllib.error.HTTPError as e:
+                if e.code not in (429, 500, 502, 503, 504):
+                    raise
+                err = e
+            except OSError as e:  # URLError, socket timeouts, connection resets
+                err = e
+            if attempt == 2 or time.time() + delays[attempt] >= deadline:
+                raise err
+            log('model call retry %d after %s' % (attempt + 1, err))
+            time.sleep(delays[attempt])
+
     def _post(self, body):
         url = '%s/models/%s:generateContent' % (self.base, self.model)
         req = urllib.request.Request(
@@ -154,7 +179,7 @@ class LLM(object):
         t0 = time.time()
         data, err = None, None
         try:
-            data = self._post(body)
+            data = self._post_retry(body)
         except urllib.error.HTTPError as e:
             err = 'HTTP %s' % e.code
             if e.code == 400:  # older/newer models may reject a config field: retry plainly once
@@ -162,7 +187,7 @@ class LLM(object):
                 gen.pop('responseJsonSchema', None)
                 gen.pop('thinkingConfig', None)
                 try:
-                    data, err = self._post(body), None
+                    data, err = self._post_retry(body), None
                 except Exception as e2:  # noqa: BLE001 - any failure falls back to code
                     err = str(e2)[:200]
         except Exception as e:  # noqa: BLE001

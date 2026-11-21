@@ -382,6 +382,11 @@ class UnitTest(unittest.TestCase):
         self.assertEqual((got[0]['what'], got[0]['due']), ('the API spec', '2027-03-22'))
         got = promises.extract('Hi team, I will send the backup plan by Thursday.', at, 'Asia/Kolkata')
         self.assertEqual((got[0]['what'], got[0]['due']), ('the backup plan', '2027-03-25'))
+        got = promises.extract('aaj EOD tak invoice bhej dunga client ko', at, 'Asia/Kolkata')
+        self.assertEqual((got[0]['what'], got[0]['due']), ('invoice', '2027-03-22'), '"aaj EOD" is the time, not the item')
+        self.assertTrue(promises.looks_like_commitment('main final copy kal subah tak bhej deta hoon'))
+        self.assertTrue(promises.looks_like_commitment('will revert with the budget numbers on Thursday'))
+        self.assertFalse(promises.looks_like_commitment('lunch kab? kal dekhte hain'))
         self.assertEqual(promises.extract('reminder: timesheets by EOD', at, 'Asia/Kolkata'), [])
         self.assertEqual(promises.extract('Can you send the deck kal tak?', at, 'Asia/Kolkata'), [])
         self.assertEqual(promises.extract_delivery('Sharing the UTM sheet as promised.'), 'UTM sheet')
@@ -431,6 +436,7 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(res.resolve('the Cobalt rate card')['ids'], ['cobaltline'])
         self.assertEqual(res.resolve('status of x (CL)?')['ids'], ['cobaltline'])
         self.assertEqual(res.resolve('NB Retail homepage')['ids'], ['northbeam'])
+        self.assertEqual(res.resolve('the food company')['ids'], ['alderpoint'], 'industry word of the client name')
         self.assertEqual(res.resolve('the London account')['ids'], ['cobaltline'])
         self.assertEqual(res.resolve('the Mumbai client')['ids'], ['northbeam'])
         self.assertEqual(res.resolve('Northstar Print poster offers')['ids'], [], 'look-alike name is not a client')
@@ -462,6 +468,41 @@ class LLMTest(unittest.TestCase):
         self.assertIsNone(llm.json_call('x', 'prompt', {'type': 'object'}))
         self.assertEqual(llm.usage(5), {'input_tokens': 0, 'output_tokens': 0, 'cost_usd': 0.0, 'ms': 5})
         s.close()
+
+    def test_retry_on_overload(self):
+        import urllib.error
+        import assist.llm as llm_mod
+        os.environ['GEMINI_API_KEY'] = 'test-key'
+        from assist.llm import LLM
+        from assist.store import Store
+        s = Store()
+        llm = LLM(s, 'ask', budget=4000)
+        calls = []
+        ok = {'candidates': [{'content': {'parts': [{'text': '{"ok": true}'}]}}],
+              'usageMetadata': {'promptTokenCount': 10, 'candidatesTokenCount': 2}}
+
+        def flaky(body):
+            calls.append(1)
+            if len(calls) < 3:
+                raise urllib.error.HTTPError('u', 503, 'unavailable', {}, None)
+            return ok
+        llm._post = flaky
+        real_sleep, llm_mod.time.sleep = llm_mod.time.sleep, lambda x: None
+        try:
+            self.assertEqual(llm.json_call('t', 'p <data>[]</data>', {'type': 'object'}), {'ok': True})
+            self.assertEqual(len(calls), 3, 'two 503s are retried, the third try succeeds')
+            calls[:] = []
+
+            def always_down(body):
+                calls.append(1)
+                raise urllib.error.HTTPError('u', 503, 'unavailable', {}, None)
+            llm._post = always_down
+            self.assertIsNone(llm.json_call('t2', 'q <data>[]</data>', {'type': 'object'}), 'falls back to code')
+            self.assertEqual(len(calls), 3)
+        finally:
+            llm_mod.time.sleep = real_sleep
+            os.environ.pop('GEMINI_API_KEY', None)
+            s.close()
 
     def test_dotenv(self):
         from assist.common import load_dotenv

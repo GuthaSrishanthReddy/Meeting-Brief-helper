@@ -16,7 +16,7 @@ _HI_TAIL = r'(?:d(?:u|oo)ng[ai](?:\s*/\s*d(?:u|oo)ng[ai])?|denge|dega|degi)'
 _MONTH = r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*'
 _DAYNAME = r'(?:mon|tues|wednes|thurs|fri|satur|sun)day'
 # A bare number is not a time ("the email copy for week 2 kal tak ..."): dates need a month or an ordinal.
-_WHEN = (r'(?:kal|parso|aaj(?:\s+shaam)?|abhi|eod|today|tomorrow|(?:next|this|coming)\s+[a-z]+|' + _DAYNAME + r'|'
+_WHEN = (r'(?:kal|parso|aaj(?:\s+(?:shaam|eod))?|abhi|eod|today|tomorrow|(?:next|this|coming)\s+[a-z]+|' + _DAYNAME + r'|'
          r'\d{1,2}(?:st|nd|rd|th)?\s+' + _MONTH + r'|' + _MONTH + r'\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}(?:st|nd|rd|th)|'
          r'end\s+of\s+(?:the\s+)?(?:day|week))')
 HINGLISH = re.compile(
@@ -30,7 +30,11 @@ ENGLISH = re.compile(
     r'\d{1,2}(?:st|nd|rd|th)?\s+' + _MONTH + r'|' + _MONTH + r'\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}(?:st|nd|rd|th)|'
     r'\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s+today)?|today|tomorrow|tonight|(?:next|this)\s+' + _DAYNAME + r'|'
     r'eod(?:\s+today)?)\b', re.I)
-LOOSE = re.compile(r"\b(?:d(?:u|oo)ng[ai]|denge|dega|degi|i'?ll|i will|we'?ll|we will|will (?:share|send|deliver|get)|promise)\b", re.I)
+LOOSE = re.compile(
+    r"\b(?:d(?:u|oo)ng[ai]|denge|dega|degi|(?:deta|deti)\s+(?:hoon|hun|hu)\b|karunga|karungi|karenge|bhejta|bhejti|"
+    r"i'?ll|i will|we'?ll|we will|promise|"
+    r"will\s+(?:revert|share|send|deliver|get|have|finish|complete|prepare|draft|submit|update|circulate|forward|"
+    r"upload|email|mail|post))\b", re.I)
 DELIVER = [
     re.compile(r'\b(?:sharing|attaching|attached|sending|sent|shared|here\s+is|here\s+are|here\'s|uploaded|'
                r'uploading|forwarding|delivering|delivered)\s+(?:you\s+)?(?:the\s+|our\s+)?(?P<what>[^.!?\n]+?)'
@@ -44,6 +48,7 @@ BAD_WHAT = re.compile(r'^(?:back|in touch|to you|it|this|that|them)\b', re.I)
 def _clean_what(s):
     s = re.sub(r'\s+', ' ', (s or '')).strip(' ,.;:-')
     s = re.sub(r'^(?:hi|hello|hey)\s+\w+,?\s*', '', s, flags=re.I)
+    s = re.sub(r'\s+(?:over\s+)?to\s+(?:you|them|him|her|the\s+client)$', '', s, flags=re.I)
     return s
 
 

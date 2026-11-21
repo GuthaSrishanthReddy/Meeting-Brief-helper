@@ -62,6 +62,12 @@ GEO_PHRASES = [
 ]
 
 
+# A described client in lower case ("the stationery company"): not resolvable by code, so the
+# model gets the client cards (and may answer "unknown").
+DESCRIBED = re.compile(r'\b(?:the|our|that|this)\s+((?:[a-z][a-z\-]+\s+){0,3}[a-z][a-z\-]+)\s+'
+                       r'(?:client|company|account|brand|retailer|folks|customer|people|business|firm)\b', re.I)
+
+
 def _initials(name):
     return ''.join(w[0] for w in re.findall(r'[A-Za-z0-9]+', name)).lower()
 
@@ -169,8 +175,9 @@ class ClientResolver(object):
                         add(cid, 2, tok, 'abbreviation')
                     elif tok.isupper() and (low == _initials(name) or _subseq_abbrev(tok, name)):
                         add(cid, 2, tok, 'initials')
-                if len(name_words) > 1 and len(tok) >= 4 and low in [w.lower() for w in name_words[1:]]:
-                    add(cid, 1, tok, 'second word')
+                if len(name_words) > 1 and len(tok) >= 4 and \
+                        low.rstrip('s') in [w.lower().rstrip('s') for w in name_words[1:]]:
+                    add(cid, 1, tok, 'second word')  # "food company" -> Alderpoint Foods
         geo = self._resolve_geo(text)
         if geo:
             for cid, phrase in geo:
@@ -186,7 +193,7 @@ class ClientResolver(object):
 
     def nickname_phrases(self, text):
         out = []
-        for rx in GEO_PHRASES:
+        for rx in GEO_PHRASES + [DESCRIBED]:
             for m in rx.finditer(text or ''):
                 out.append((m.group(0), m.group(1)))
         return out
