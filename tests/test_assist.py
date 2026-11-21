@@ -457,9 +457,76 @@ class LLMTest(unittest.TestCase):
         os.environ.update(self.old)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def clear_keys(self):
+        for k in ('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_KEY', 'OPENAI_API_KEY', 'R3_PROVIDER', 'R3_MODEL',
+                  'R3_OPENAI_MODEL'):
+            os.environ.pop(k, None)
+
+    def test_provider_selection(self):
+        from assist.llm import LLM
+        from assist.store import Store
+        s = Store()
+
+        def make():
+            return LLM(s, 'ask', budget=4000)
+        self.clear_keys()
+        self.assertIsNone(make().provider)
+        os.environ['OPENAI_KEY'] = 'sk-test'
+        l = make()
+        self.assertEqual((l.provider, l.model, l.enabled), ('openai', 'gpt-6-luna', True), 'no Gemini key: OpenAI')
+        os.environ['GEMINI_API_KEY'] = 'g-test'
+        self.assertEqual(make().provider, 'gemini', 'the Gemini key wins when both are set')
+        os.environ['R3_PROVIDER'] = 'openai'
+        self.assertEqual(make().provider, 'openai', 'R3_PROVIDER forces one')
+        self.clear_keys()
+        os.environ['GEMINI_API_KEY'] = 'key_goes_here'
+        os.environ['OPENAI_API_KEY'] = 'sk-std'
+        l = make()
+        self.assertEqual((l.provider, l.key), ('openai', 'sk-std'), 'a placeholder is not a key; OPENAI_API_KEY works')
+        self.clear_keys()
+        s.close()
+
+    def test_openai_request_and_usage(self):
+        from assist.llm import LLM, strictify
+        from assist.store import Store
+        self.clear_keys()
+        os.environ['OPENAI_KEY'] = 'sk-test'
+        s = Store()
+        llm = LLM(s, 'ask', budget=4000)
+        sent = []
+
+        def fake_post(body):
+            sent.append(body)
+            return {'choices': [{'message': {'content': '{"client_id": "northbeam"}'}}],
+                    'usage': {'prompt_tokens': 150, 'completion_tokens': 40,
+                              'completion_tokens_details': {'reasoning_tokens': 30}}}
+        llm._post = fake_post
+        schema = {'type': 'object', 'properties': {'client_id': {'type': 'string'},
+                                                   'items': {'type': 'array', 'items': {
+                                                       'type': 'object', 'properties': {'a': {'type': 'string'}}}}}}
+        self.assertEqual(llm.json_call('nick', 'which? <data>[]</data>', schema), {'client_id': 'northbeam'})
+        b = sent[0]
+        self.assertEqual(b['model'], 'gpt-6-luna')
+        self.assertNotIn('temperature', b)
+        self.assertEqual(b['reasoning_effort'], 'low')
+        self.assertGreaterEqual(b['max_completion_tokens'], 1000)
+        self.assertEqual([m['role'] for m in b['messages']], ['developer', 'user'])
+        js = b['response_format']['json_schema']
+        self.assertTrue(js['strict'])
+        self.assertEqual(js['schema']['required'], ['client_id', 'items'], 'strict mode: all properties required')
+        self.assertFalse(js['schema']['additionalProperties'])
+        self.assertFalse(js['schema']['properties']['items']['items']['additionalProperties'], 'nested objects too')
+        self.assertNotIn('additionalProperties', schema, 'the caller schema is not modified')
+        self.assertEqual((llm.input_tokens, llm.output_tokens), (150, 40))
+        self.assertAlmostEqual(llm.cost, 150 * 0.10 / 1e6 + 40 * 0.50 / 1e6)
+        refusal = {'choices': [{'message': {'content': None, 'refusal': 'no'}}], 'usage': {'prompt_tokens': 5}}
+        self.assertIsNone(LLM.parse_openai(refusal)[0])
+        self.assertEqual(strictify({'type': 'object', 'properties': {}})['required'], [])
+        s.close()
+        self.clear_keys()
+
     def test_disabled_without_key(self):
-        os.environ.pop('GEMINI_API_KEY', None)
-        os.environ.pop('GOOGLE_API_KEY', None)
+        self.clear_keys()
         from assist.llm import LLM
         from assist.store import Store
         s = Store()

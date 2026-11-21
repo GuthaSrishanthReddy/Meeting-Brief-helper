@@ -35,10 +35,12 @@ python3 -m unittest discover -s tests -v
 
 | | |
 |---|---|
-| Provider | Google Gemini API, REST `generateContent` |
-| Network access needed | `generativelanguage.googleapis.com` only |
+| Provider | Google Gemini API, REST `generateContent`. **Fallback provider:** OpenAI Chat Completions, used only when no Gemini key is set |
+| Network access needed | `generativelanguage.googleapis.com`, plus `api.openai.com` only if the OpenAI fallback is used |
+| OpenAI model | `gpt-6-luna` (override with `R3_OPENAI_MODEL`); strict JSON schema, `reasoning_effort: low`, no `temperature` |
 | Model | `gemini-3.5-flash-lite` (override with `R3_MODEL`). `gemini-3.8-flash` was tried first but returned HTTP 503 and a timeout on test calls, so it is not the default |
-| Key | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), from the environment or a `.env` file next to `assist.py` (copy `.env.example`; real environment variables win; `.env` is git-ignored) |
+| Keys | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) and, as the fallback, `OPENAI_KEY` (or `OPENAI_API_KEY`). Put them in the environment or in a `.env` file next to `assist.py` (copy `.env.example`; real environment variables win; `.env` is git-ignored). Placeholder values such as `key_goes_here` are ignored |
+| Which one runs | The Gemini key if present, else the OpenAI key, else no model (code only). `R3_PROVIDER=openai` or `gemini` forces one |
 | Settings | JSON output with a response schema, `thinkingLevel: low` |
 | Code-only switch | `R3_NO_LLM=1` |
 
@@ -62,9 +64,12 @@ timeouts are retried twice (1.5 s, 3 s) inside a 60 s deadline before falling ba
 
 ## How tokens are counted
 
-- `usage.input_tokens` is the API's `usageMetadata.promptTokenCount`.
-- `usage.output_tokens` is `candidatesTokenCount + thoughtsTokenCount`.
-- `cost_usd` uses Gemini's paid-tier prices ($0.30 / $2.50 per 1M tokens for `gemini-3.5-flash-lite`).
+- `usage.input_tokens` is the API's own prompt count: Gemini `usageMetadata.promptTokenCount`, OpenAI
+  `usage.prompt_tokens`.
+- `usage.output_tokens` is Gemini `candidatesTokenCount + thoughtsTokenCount`, or OpenAI
+  `completion_tokens` (which already includes reasoning tokens).
+- `cost_usd` uses each provider's paid-tier prices: $0.30 / $2.50 per 1M tokens for
+  `gemini-3.5-flash-lite`, $0.10 / $0.50 for `gpt-6-luna`.
 - If one brief or answer makes several calls, they are added up.
 - Calls made during `ingest` are logged to `.assist_store/usage.jsonl`, one line per call with
   purpose, tokens, cost and time.
