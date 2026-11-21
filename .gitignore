@@ -1,0 +1,11 @@
+# local store (SQLite, usage log, caches) and harness runs
+.assist_store/
+runs/
+__pycache__/
+*.pyc
+# never commit keys
+.env
+BuildSprint-R3-candidate/
+.claude/
+
+
