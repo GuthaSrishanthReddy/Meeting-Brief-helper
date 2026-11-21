@@ -13,14 +13,22 @@ python3 assist.py ask    --person P --at ISO --ask "question"
 python3 assist.py forget --person P --what "words"
 ```
 
-Only JSON goes to stdout and logs go to stderr. The exit code is always 0, even on bad input.
+Only JSON goes to stdout and logs go to stderr (`--help` text included). The exit code is always 0, even
+on bad input.
 
 ## Install
 
 - Python 3.8 or newer. Nothing to install: `requirements.txt` is empty on purpose.
 - Data is found through `$R3_PACK` (the folder that holds `data/`), else the current folder.
 - The store is kept in `$R3_STORE`, else `./.assist_store/`. It holds `assist.db` (SQLite), the
-  model usage log `usage.jsonl`, and the output and prompt caches. `ingest --day 1` starts it fresh.
+  model usage log `usage.jsonl`, the command log `commands.jsonl` (see the web console section), and the
+  output and prompt caches. `ingest --day 1` starts it fresh.
+- `ingest --day N` reads `data/days/day-NN.jsonl`. A day with no file is accepted as a quiet day only when
+  it is the very next day. Any other missing day (a typo such as `--day 999`, or a wrong `$R3_PACK`)
+  prints `{"ok": false, "error": "no data for day N; nothing was changed"}` and leaves the store as it
+  was, including for `--day 1`, which would otherwise start a fresh store and erase the good one.
+- Times (`ask --at`) without an offset are UTC. Offsets such as `+05:30` and `+0530` are honoured on every
+  Python version. A time that cannot be read is taken as "now".
 
 The records and extracted facts are the source of truth, because later briefs and answers need their
 history and citations. The output cache keeps up to 512 recent JSON results; the model cache keeps up
@@ -119,9 +127,11 @@ plainer forms (no `reasoning_effort` with plain JSON mode, then the `system` rol
 `response_format`); a model the key cannot use (403/404) is replaced by the next in the chain
 (`gpt-6-luna`, `gpt-5.4-mini`, `gpt-4o-mini`); an embeddings call that rejects `dimensions` is retried
 without it. If everything fails, the program answers from code alone, which scores the same on days 1
-to 5. The one thing only a real key can show is that OpenAI itself accepts the request. Only `api.openai.com` is contacted. Usage in every output and in
-`.assist_store/usage.jsonl` then shows the real OpenAI token counts. Without any key the program
-still runs, on code only, and scores the same on days 1 to 5.
+to 5. The one thing only a real key can show is that OpenAI itself accepts the request.
+
+Only `api.openai.com` is contacted. Usage in every output and in `.assist_store/usage.jsonl` then shows
+the real OpenAI token counts. Without any key the program still runs, on code only, and scores the same
+on days 1 to 5.
 
 ## How tokens are counted
 
@@ -356,6 +366,7 @@ assist/
 webapp.py            python3 webapp.py: Console and Metrics pages
 web/                 console.html, metrics.html, app.css, common.js, console.js, metrics.js
 tests/test_web.py    the web console and the command log: token, Host, Origin, gate, validation, metrics
+tests/test_cli_contract.py  --help on stderr, time offsets, and ingest refusing days that do not exist
 tests/test_summary.py, test_watchdog.py, test_openai_http.py   summary, watchdog, OpenAI transport
 tests/test_assist.py made-up pack: private and restricted records, zero leaks for every person,
                      forget, leave expiry, max N, blockers first, two Priyas, injection, other org,

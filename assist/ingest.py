@@ -18,6 +18,7 @@ Task changes are not copied: they are replayed from the visible task records at 
 """
 import collections
 import datetime as dt
+import os
 import re
 
 from . import feedback, owners, promises
@@ -193,6 +194,15 @@ ABBREV_FACTS_PER_TOKEN = 20  # one short form needs a few sources, not one fact 
 
 
 def run(store, day):
+    path = data_path('days', 'day-%02d.jsonl' % day)
+    if day != 1 and day in set(store.meta('days', []) or []):
+        return {'ok': True, 'day': day, 'skipped': 'already ingested'}
+    # A day with no data file is a quiet day only when it is the very next one. Anything else (a typo such
+    # as --day 999, a wrong R3_PACK) must change nothing: marking it ingested would push last_day past real
+    # time, make every later meeting look as if it had already happened, and (for day 1) wipe a good store.
+    if day < 1 or (not os.path.isfile(path) and not (day > 1 and day == store.last_day() + 1)):
+        log('ingest: no data for day %d (looked for %s); nothing was changed' % (day, path))
+        return {'ok': False, 'day': day, 'error': 'no data for day %d; nothing was changed' % day}
     if day == 1:
         store.reset()
     done = set(store.meta('days', []) or [])
@@ -201,7 +211,7 @@ def run(store, day):
     people, clients = store.people, Clients()
     resolver = ClientResolver(clients, people, {})
     llm = LLM(store, 'ingest', budget=None)
-    rows = [r for r in read_jsonl(data_path('days', 'day-%02d.jsonl' % day)) if r.get('id')]
+    rows = [r for r in read_jsonl(path) if r.get('id')]
     kinds = {}
     for seq, r in enumerate(rows):
         kinds[r['id']] = classify(r, people)

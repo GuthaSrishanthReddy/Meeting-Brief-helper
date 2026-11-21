@@ -13,6 +13,7 @@ $R3_PACK, else the current folder. The store lives in $R3_STORE, else ./.assist_
 harness's 120 s kill never leaves a call without valid JSON.
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -180,7 +181,8 @@ def main():
     argv = glue_values(sys.argv[1:])
     cmd = argv[0] if argv else ''
     try:
-        a = parse(argv)
+        with contextlib.redirect_stdout(sys.stderr):  # argparse prints --help on stdout; stdout is for the JSON only
+            a = parse(argv)
     except SystemExit:
         emit(fallback(cmd, 'bad arguments'))
         return 0

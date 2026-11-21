@@ -139,23 +139,54 @@ def load_dotenv():
 
 
 # ------------------------------------------------------------------ timestamps
+_TS_LOOSE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:[.,](\d+))?)?)?'
+                       r'\s*(?:([+-])(\d{2})(?::?(\d{2}))?)?(?:\s*(?:UTC|GMT))?$', re.I)
+_OFFSET_HINT = re.compile(r'\d{2}:\d{2}.*[+-]\d{2}')
+
+
+def _parse_ts_loose(t):
+    """Forms Python 3.8's fromisoformat rejects (+0530, +05, a fraction of any length). The UTC offset is
+    honoured here and never dropped: reading 18:00+05:30 as 18:00 UTC would move a question's moment."""
+    m = _TS_LOOSE.match(t)
+    if not m:
+        return None
+    y, mo, d, hh, mi, ss, frac, sign, oh, om = m.groups()
+    try:
+        out = dt.datetime(int(y), int(mo), int(d), int(hh or 0), int(mi or 0), int(ss or 0),
+                          int((frac or '0')[:6].ljust(6, '0')))
+        if sign:
+            hours, minutes = int(oh), int(om or 0)
+            if hours > 23 or minutes > 59:
+                return None
+            delta = dt.timedelta(hours=hours, minutes=minutes)
+            out = out.replace(tzinfo=dt.timezone(-delta if sign == '-' else delta))
+    except ValueError:
+        return None
+    return out
+
+
 def parse_ts(s):
-    """ISO string -> aware UTC datetime (or None)."""
+    """ISO string -> aware UTC datetime (or None). A time without an offset is taken as UTC; an offset is
+    always honoured, on every Python version."""
     if not s or not isinstance(s, str):
         return None
     t = s.strip()
+    if not t:
+        return None
     if t[-1:] in ('Z', 'z'):
         t = t[:-1] + '+00:00'
     d = None
     try:
         d = dt.datetime.fromisoformat(t)
     except ValueError:
-        for fmt, n in (('%Y-%m-%dT%H:%M:%S', 19), ('%Y-%m-%dT%H:%M', 16), ('%Y-%m-%d', 10)):
-            try:
-                d = dt.datetime.strptime(t[:n], fmt)
-                break
-            except ValueError:
-                continue
+        d = _parse_ts_loose(t)
+        if d is None and not _OFFSET_HINT.search(t):  # trailing text after a plain time: read the leading part
+            for fmt, n in (('%Y-%m-%dT%H:%M:%S', 19), ('%Y-%m-%dT%H:%M', 16), ('%Y-%m-%d', 10)):
+                try:
+                    d = dt.datetime.strptime(t[:n], fmt)
+                    break
+                except ValueError:
+                    continue
     if d is None:
         return None
     if d.tzinfo is None:
