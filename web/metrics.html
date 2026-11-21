@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="r3-token" content="{{TOKEN}}">
+<title>Metrics - Brief Helper</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="brand-mark">B</span> Brief Helper</div>
+  <nav class="nav" aria-label="Pages">
+    <a href="/console">Console</a>
+    <a href="/metrics" aria-current="page">Metrics</a>
+  </nav>
+  <div class="status" id="status" aria-live="polite"></div>
+</header>
+
+<main>
+  <div class="toolbar">
+    <h1 style="font-size:18px">Logs and performance</h1>
+    <span class="spacer"></span>
+    <span id="updated" class="muted small" role="status" aria-live="polite"></span>
+    <label class="check"><input type="checkbox" id="auto"> Refresh every 5 s</label>
+    <button class="btn small" type="button" id="refresh">Refresh now</button>
+  </div>
+
+  <div id="error" class="note bad" hidden style="margin-bottom:16px"></div>
+  <div id="tiles" class="tiles"></div>
+  <div id="empty" class="note" hidden style="margin-bottom:16px">
+    No commands have been logged yet. Run something from the <a href="/console">Console</a>, or from the CLI, and it will show up here.
+  </div>
+
+  <div class="stack">
+    <div class="cols-2">
+      <section class="panel"><header><h2>Command latency, most recent 300</h2><span class="muted small">red ring = not ok</span></header>
+        <div class="body"><div id="chart-timeline"></div><div id="legend-timeline"></div></div></section>
+      <section class="panel"><header><h2>Latency by command</h2><span class="muted small">median, 90th percentile, slowest</span></header>
+        <div class="body"><div id="chart-bycmd"></div><div id="legend-bycmd"></div></div></section>
+    </div>
+
+    <div class="cols-2">
+      <section class="panel"><header><h2>Outcomes</h2></header>
+        <div class="body"><div id="chart-outcomes"></div><div id="legend-outcomes"></div>
+          <div class="row" id="outcome-chips" style="margin-top:12px"></div></div></section>
+      <section class="panel"><header><h2>Model calls by purpose</h2><span class="muted small" id="model-sub"></span></header>
+        <div class="body"><div id="model-empty" class="empty" hidden>No model calls logged yet. The model is off, or nothing needed it.</div>
+          <div id="chart-model"></div><div id="legend-model"></div>
+          <div class="scroll" style="margin-top:12px"><table id="model-table"></table></div>
+          <div id="model-errors" style="margin-top:12px"></div></div></section>
+    </div>
+
+    <section class="panel">
+      <header><h2>Logs</h2>
+        <div class="tabs" style="padding:0;border:0" role="tablist" aria-label="Log">
+          <button class="tab" role="tab" data-stream="commands" aria-selected="true" type="button">Commands</button>
+          <button class="tab" role="tab" data-stream="usage" aria-selected="false" type="button">Model calls</button>
+        </div>
+      </header>
+      <div class="body">
+        <div class="filters">
+          <select id="f-kind" aria-label="Filter"></select>
+          <select id="f-status" aria-label="Status"></select>
+          <input type="text" id="f-q" placeholder="Search the log" aria-label="Search the log">
+          <select id="f-limit" aria-label="Rows"><option>50</option><option selected>100</option><option>250</option><option>500</option></select>
+        </div>
+        <div class="scroll"><table id="log-table"></table></div>
+        <div class="small muted" id="log-note" style="margin-top:8px"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <header><h2>Harness runs</h2>
+        <div class="row"><span class="muted small" id="runs-dir"></span><select id="run-select" aria-label="Harness run"></select></div>
+      </header>
+      <div class="body" id="run-body"><div class="empty">Loading&hellip;</div></div>
+    </section>
+  </div>
+</main>
+
+<script src="/static/common.js"></script>
+<script src="/static/metrics.js"></script>
+</body>
+</html>

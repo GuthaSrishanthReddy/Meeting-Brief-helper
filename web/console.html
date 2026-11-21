@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="r3-token" content="{{TOKEN}}">
+<title>Console - Brief Helper</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="brand-mark">B</span> Brief Helper</div>
+  <nav class="nav" aria-label="Pages">
+    <a href="/console" aria-current="page">Console</a>
+    <a href="/metrics">Metrics</a>
+  </nav>
+  <div class="status" id="status" aria-live="polite"></div>
+</header>
+
+<main>
+  <div class="grid-console">
+    <section class="panel" aria-labelledby="cmd-h">
+      <header><h2 id="cmd-h">Command</h2><span class="muted small">runs the real <code>assist.py</code></span></header>
+      <div class="tabs" role="tablist" aria-label="Command">
+        <button class="tab" role="tab" data-cmd="brief" aria-selected="true" type="button">Brief</button>
+        <button class="tab" role="tab" data-cmd="ask" aria-selected="false" type="button">Ask</button>
+        <button class="tab" role="tab" data-cmd="forget" aria-selected="false" type="button">Forget</button>
+        <button class="tab" role="tab" data-cmd="ingest" aria-selected="false" type="button">Ingest</button>
+      </div>
+      <div class="body">
+        <div id="empty-note" class="note warn" hidden style="margin-bottom:12px">
+          Nothing is ingested yet. Use the Ingest tab to load day 1, then day 2, and so on.
+        </div>
+
+        <form id="form" autocomplete="off" novalidate>
+          <label id="person-field">As person
+            <select id="person"></select>
+          </label>
+
+          <div id="f-brief" class="stack" style="gap:12px">
+            <label>Meeting date <span class="hint">(the person's local date)</span>
+              <input type="date" id="brief-date">
+            </label>
+            <div id="brief-meetings" class="suggest" aria-label="Meetings of this person"></div>
+            <label class="check"><input type="checkbox" id="brief-summary">
+              <span>Add a short model summary per meeting (<code>--summary</code>). Written only from the lines already approved for that meeting.</span>
+            </label>
+          </div>
+
+          <div id="f-ask" class="stack" style="gap:12px" hidden>
+            <label>Asked at <span class="hint">(UTC; the answer is as of this moment)</span>
+              <input type="datetime-local" id="ask-at">
+            </label>
+            <div class="row">
+              <button class="btn small" type="button" id="ask-eod">End of last ingested day, 18:00</button>
+              <button class="btn small" type="button" id="ask-now">Now</button>
+            </div>
+            <label>Question
+              <textarea id="ask-text" maxlength="500" placeholder="Who owns billing for NB?"></textarea>
+            </label>
+            <div>
+              <div class="small muted" style="margin-bottom:4px">Examples from the kit</div>
+              <div id="ask-examples" class="suggest"></div>
+            </div>
+            <div class="note">The same person, time and question return the cached answer. Change the time by a second to ask afresh.</div>
+          </div>
+
+          <div id="f-forget" class="stack" style="gap:12px" hidden>
+            <label>What to forget
+              <textarea id="forget-text" maxlength="500" placeholder="Forget what I said about the Dubai trip."></textarea>
+            </label>
+            <div class="note warn">Hides that topic from this person's briefs and answers and clears the caches. The text is not saved in this page's history.</div>
+          </div>
+
+          <div id="f-ingest" class="stack" style="gap:12px" hidden>
+            <label>Day to ingest
+              <input type="number" id="ingest-day" min="1" max="999" step="1">
+            </label>
+            <div id="ingest-info" class="small muted"></div>
+            <label class="check" id="ingest-confirm-row" hidden><input type="checkbox" id="ingest-confirm">
+              <span>I understand that day 1 starts a fresh store and erases the current one.</span>
+            </label>
+          </div>
+
+          <div>
+            <div class="small muted" style="margin-bottom:4px">Equivalent command</div>
+            <div class="cli"><code id="cli"></code><button class="btn small" type="button" id="copy-cli">Copy</button></div>
+          </div>
+
+          <div class="row">
+            <button class="btn primary" type="submit" id="run">Run</button>
+            <span id="run-status" class="muted small" role="status" aria-live="polite"></span>
+            <span class="faint small" style="margin-left:auto">Ctrl+Enter</span>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="res-h">
+      <header>
+        <h2 id="res-h">Result</h2>
+        <div class="row" id="res-chips"></div>
+      </header>
+      <div class="tabs" role="tablist" aria-label="Result view">
+        <button class="tab" role="tab" data-view="formatted" aria-selected="true" type="button">Formatted</button>
+        <button class="tab" role="tab" data-view="raw" aria-selected="false" type="button">Raw JSON</button>
+      </div>
+      <div class="body">
+        <div id="out-error" class="note bad" hidden></div>
+        <div id="out-formatted"><div class="result-empty">Run a command to see its result here.</div></div>
+        <div id="out-raw" hidden>
+          <div class="row" style="margin-bottom:8px"><button class="btn small" type="button" id="copy-raw">Copy JSON</button></div>
+          <pre id="raw-pre"></pre>
+        </div>
+        <details id="stderr-box" hidden><summary>Messages from the command (stderr)</summary><pre id="stderr-pre"></pre></details>
+      </div>
+    </section>
+
+    <section class="panel history" aria-labelledby="hist-h">
+      <header>
+        <h2 id="hist-h">History</h2>
+        <div class="row"><span class="muted small">kept only in this browser</span>
+          <button class="btn small" type="button" id="clear-history">Clear</button></div>
+      </header>
+      <div class="body"><div id="history" class="history-list"></div></div>
+    </section>
+  </div>
+</main>
+
+<dialog id="record-dialog" aria-labelledby="record-title">
+  <header><h2 id="record-title">Record</h2><button class="btn small" type="button" id="record-close">Close</button></header>
+  <div class="body" id="record-body"></div>
+</dialog>
+
+<script src="/static/common.js"></script>
+<script src="/static/console.js"></script>
+</body>
+</html>

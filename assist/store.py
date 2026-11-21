@@ -23,7 +23,7 @@ try:  # Python 3.10+
 except ImportError:  # pragma: no cover
     from collections import Mapping
 
-from .common import People, log, record_text
+from .common import People, log, record_text, trim_log
 
 SEARCH_TEXT_CHARS = 6000  # indexed per record: enough for any message, and the head of a long document
 MAX_EMBEDDING_CACHE_ENTRIES = 1500
@@ -161,6 +161,7 @@ class Store(object):
         self.dir = store_dir()
         self.path = os.path.join(self.dir, 'assist.db')
         self.usage_path = os.path.join(self.dir, 'usage.jsonl')
+        self.commands_path = os.path.join(self.dir, 'commands.jsonl')
         self.db = sqlite3.connect(self.path, timeout=60)
         self.db.row_factory = sqlite3.Row
         self._drop_if_old_schema()
@@ -202,10 +203,11 @@ class Store(object):
             self.db.execute('DROP TABLE IF EXISTS %s' % t)
         self.db.executescript(SCHEMA)
         self.fts = self._init_fts()
-        try:
-            os.remove(self.usage_path)
-        except OSError:
-            pass
+        for p in (self.usage_path, self.commands_path):  # a rebuilt store starts its logs afresh
+            try:
+                os.remove(p)
+            except OSError:
+                pass
         self._fact_cache = {}
 
     # ------------------------------------------------------------- meta
@@ -459,6 +461,7 @@ class Store(object):
 
     def log_usage(self, entry):
         try:
+            trim_log(self.usage_path, 4000000, 5000)
             with open(self.usage_path, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(entry) + '\n')
         except OSError as e:

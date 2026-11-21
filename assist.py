@@ -96,7 +96,9 @@ def dispatch(a):
         key = cache_key(a, store.last_day())
         cached = store.out_get(key)
         if cached is not None:  # the same brief or question asked twice returns the same JSON
+            _meta['cache'] = 'hit'
             return cached
+        _meta['cache'] = 'miss'
         cacheable = True
         if a.cmd == 'brief':
             from assist import brief
@@ -120,10 +122,20 @@ def dispatch(a):
 
 WATCHDOG_S = 100.0  # the harness kills a command at 120 s; answer with valid JSON before that
 _state = {'done': False}
+_meta = {'cache': None}  # facts about this run that the command log wants (see assist/cmdlog.py)
 _out_lock = threading.Lock()
 
 
-def start_watchdog(cmd):
+def log_command(a, out, status):
+    """One line in the command log (never raises, never holds content). See assist/cmdlog.py."""
+    try:
+        from assist import cmdlog
+        cmdlog.record(a, out, status, elapsed_ms(), _meta['cache'])
+    except Exception as e:  # noqa: BLE001
+        log('command log skipped:', e)
+
+
+def start_watchdog(a):
     """If the command has not printed its result after R3_WATCHDOG_S seconds (default 100; 0 = off),
     whatever it is stuck on (a locked database, a hung network call), print the safe fallback JSON and
     exit 0 instead of being killed with no output. Committed data is safe: an interrupted SQLite
@@ -141,7 +153,9 @@ def start_watchdog(cmd):
                 return
             _state['done'] = True
             log('watchdog: no result after %.0f s, answering with the safe fallback' % limit)
-            emit(fallback(cmd, 'timed out after %.0f s' % limit))
+            out = fallback(a.cmd, 'timed out after %.0f s' % limit)
+            log_command(a, out, 'watchdog')
+            emit(out)
             try:
                 sys.stderr.flush()  # os._exit skips the normal flush, and piped stderr is block-buffered on 3.8
             except Exception:  # noqa: BLE001
@@ -173,12 +187,15 @@ def main():
     if not a.cmd:
         emit(fallback('', 'no command'))
         return 0
-    start_watchdog(a.cmd)
+    start_watchdog(a)
+    status = 'ok'
     try:
         out = dispatch(a)
     except Exception:  # noqa: BLE001 - never crash, never print non-JSON
         log(traceback.format_exc())
         out = fallback(a.cmd, 'internal error (see stderr)')
+        status = 'fallback'
+    log_command(a, out, status)
     finish(out)
     return 0
 

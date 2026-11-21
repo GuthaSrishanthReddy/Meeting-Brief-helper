@@ -84,6 +84,22 @@ def read_jsonl(path):
     return rows
 
 
+def trim_log(path, max_bytes, keep_lines):
+    """Keep a JSONL log bounded: once it is over `max_bytes`, rewrite it with only its last `keep_lines`
+    lines. Never raises."""
+    try:
+        if os.path.getsize(path) <= max_bytes:
+            return
+        with open(path, encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()[-keep_lines:]
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 # ------------------------------------------------------------------ .env
 def load_dotenv():
     """Load KEY=VALUE lines from a .env file into os.environ (existing variables win).

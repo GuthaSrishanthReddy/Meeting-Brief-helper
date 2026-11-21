@@ -246,6 +246,58 @@ elapsed time of the command. The summarised output has its own cache key, and is
 meeting got a summary, so an API error is never frozen into the cache as `null`. The flag exists on
 `brief` only; on any other command it is rejected like any bad argument.
 
+## Web console: two pages over the same commands
+
+```
+python3 webapp.py                        # Console http://127.0.0.1:8765/console   Metrics .../metrics
+python3 webapp.py --port 9000 --pack /path/to/pack --store /path/to/store --runs /path/to/runs
+```
+
+It is a convenience for people; the scored CLI is unchanged and does not need it. Standard library only.
+
+**Console** (`/console`) runs the four commands from a form: `brief` (date, meeting shortcuts for the
+chosen person, the `--summary` switch), `ask` (time in UTC, example questions from the kit), `forget` and
+`ingest`. Every run starts the real `assist.py` as a child process, so the page cannot differ from the CLI:
+same cache, same visibility gate, same watchdog. It shows the exact command line (copyable), the result
+laid out for reading, the raw JSON, and stderr. A source id in a result opens the record in a dialog; that
+goes through the same `Store.visible(person, ...)` gate as the CLI plus the forget and not-relevant
+filters, and a record the person may not see, one that does not exist and one they asked to forget all
+return the same 404. History is kept in the browser only, and the text of a `forget` is never saved
+there. `ingest --day 1` erases the store, so the page asks for a tick before it runs. A link such as
+`/console#cmd=ask&person=p02&at=2026-11-05T18:00&q=Who owns billing for NB?&run=1` pre-fills the form
+and, for `brief` and `ask` only, runs it.
+
+**Metrics** (`/metrics`) reads two logs and the harness runs: command count, latency (median, 90th
+percentile, slowest, on a log scale because one 100 s outlier would otherwise flatten the chart), cache
+hit rate, outcomes (ok, fallback after an internal error, watchdog fired), ask kinds, model calls by
+purpose with tokens, cost and the most common errors, a filterable table of each log, and for any folder
+under `runs/` the score, per-call latency, slowest calls and the items that lost points.
+
+**The command log** is `<store>/commands.jsonl`, one line per command, written by the CLI itself (so it
+covers harness runs too). It holds the command, who it ran for, how long it took, cache hit or miss, how it
+ended, and counts from the result. It never holds content: no answer or brief text, and no question or
+forget text, because a log must not keep what someone asked the helper to forget. A question is
+identified by its length and a short hash. `R3_LOG_ASK_TEXT=1` also keeps the first 200 characters of
+questions; `R3_SOURCE` says where a command came from (`web` for the console, otherwise `cli`). The file
+is capped (2 MB, trimmed to the last 3,000 lines), starts afresh on `ingest --day 1`, and a failure to
+write it is swallowed, so it can never change a command's output or exit code. Output was compared
+byte for byte with the version before the log (identical, ignoring timing).
+
+**Safety**, because these pages show people's work records and there is no login:
+- It listens on 127.0.0.1 only. `--host` with another address prints a warning.
+- A request needs a `Host` header the server knows (stops DNS rebinding) and, for every `/api` call, a
+  random per-start token that only the pages this server serves contain (stops other websites). A POST
+  with a foreign `Origin` is refused.
+- Only the four commands run, with validated arguments (known person, real date, text length and
+  control characters, a day that exists in the pack), no shell, a 64 KB body cap, and one command at a
+  time (a second waits, then gets a 429).
+- `/api/info` reports which provider and model are on, never a key or `.env` content.
+- The pages build their DOM with `textContent`, never `innerHTML`, because record text is untrusted. A
+  content-security policy forbids inline script, framing and outside connections.
+
+`tests/test_web.py` covers all of the above with no network and no model. The pages were looked at in
+headless Edge only, in light and dark themes; no other browser was tried.
+
 ## Scale
 
 Measured on the kit's volume cloned up (chat, mail, notification and document records, 5 days):
@@ -298,6 +350,13 @@ assist/
   guard.py           citation allow-list, stale / tombstone / suppression / invented-status checks
   common.py          paths, people, clients, time zones (zoneinfo or built-in rules), dates, text
   llm.py             Gemini / OpenAI wrapper: budget, time cap, usage, prompt-hash cache, embeddings
+  summary.py         optional `brief --summary`
+  cmdlog.py          one line per command in commands.jsonl (no content), for the metrics page
+  web.py             the web console's server and JSON API (webapp.py starts it)
+webapp.py            python3 webapp.py: Console and Metrics pages
+web/                 console.html, metrics.html, app.css, common.js, console.js, metrics.js
+tests/test_web.py    the web console and the command log: token, Host, Origin, gate, validation, metrics
+tests/test_summary.py, test_watchdog.py, test_openai_http.py   summary, watchdog, OpenAI transport
 tests/test_assist.py made-up pack: private and restricted records, zero leaks for every person,
                      forget, leave expiry, max N, blockers first, two Priyas, injection, other org,
                      a new person mid-run, unknown zone, the JSON contract, the model wrapper
