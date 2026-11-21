@@ -21,7 +21,7 @@ import datetime as dt
 import re
 
 from . import feedback, owners, promises
-from .clients import ClientResolver
+from .clients import ClientResolver, abbreviations
 from .common import (Clients, canon_ts, content_words, data_path, find_dates, local_date, log, parse_ts,
                      read_jsonl, sentences, words)
 from .llm import LLM
@@ -98,8 +98,8 @@ def labelled_lines(body):
 
 def previous_version(store, r, id_field):
     best = None
-    for p in store.ingest_rows('type=? AND org=?', (r.get('type'), r.get('org'))):
-        if p['id'] == r['id'] or p.get(id_field) != r.get(id_field):
+    for p in store.versions(r.get('type'), r.get(id_field), r.get('org')):  # indexed by doc/sheet id
+        if p['id'] == r['id']:
             continue
         try:
             if int(p.get('version') or 0) >= int(r.get('version') or 0):
@@ -189,6 +189,9 @@ def sheet_facts(store, r, day, at):
             'row_label': row_label, 'col_label': col_label, 'old': a, 'new': b, 'old_rid': prev['id']})
 
 
+ABBREV_FACTS_PER_TOKEN = 20  # one short form needs a few sources, not one fact per message
+
+
 def run(store, day):
     if day == 1:
         store.reset()
@@ -204,8 +207,12 @@ def run(store, day):
         kinds[r['id']] = classify(r, people)
         store.add_record(r, day, seq, kinds[r['id']], canon_ts(r.get('at')))
     update_day_dates(store, day, rows, people)
+    # Feedback first: preferences, corrections and forgets are the person's explicit instructions, so
+    # they get the model's time before the background passes below.
+    fb = feedback.apply_day(store, day, people, resolver, llm)
 
     promise_cands, owner_cands = [], []
+    abbrev_seen = {}
     ordered = sorted(enumerate(rows), key=lambda x: (canon_ts(x[1].get('at')), x[0]))
     for _, r in ordered:
         kind = kinds[r['id']]
@@ -214,6 +221,11 @@ def run(store, day):
         rid, t, at = r['id'], r.get('type'), canon_ts(r.get('at'))
         client, body, author, org = r.get('client'), r.get('body') or '', r.get('author') or '', r.get('org')
         try:
+            if client:
+                for tok in abbreviations(body, clients.name(client)):  # "NB" for Northbeam Retail, learned once
+                    if abbrev_seen.get((client, tok), 0) < ABBREV_FACTS_PER_TOKEN:
+                        abbrev_seen[(client, tok)] = abbrev_seen.get((client, tok), 0) + 1
+                        store.add_fact('abbrev', rid, day, at, client, {'tok': tok})
             if t == 'note':
                 for text in decisions(body):
                     store.add_fact('decision', rid, day, at, client, {'text': text, 'event_id': r.get('event_id')})
@@ -247,28 +259,77 @@ def run(store, day):
         except Exception as e:  # noqa: BLE001 - one odd record must not stop the day
             log('record %s skipped during extraction: %s' % (rid, e))
 
-    # Language fallbacks: only messages the patterns flagged but could not read (no-op without a key).
-    by_id = {r['id']: r for r in rows}
-    for rid, got in promises.model_pass(llm, promise_cands).items():
-        r = by_id[rid]
-        store.add_fact('promise', rid, day, canon_ts(r.get('at')), r.get('client'),
-                       {'what': got['what'], 'due': got['due'], 'owner': r.get('author'), 'via': 'model'})
-    for rid, it in owners.model_pass(llm, owner_cands, [c['id'] for c in clients.items]).items():
-        r = by_id[rid]
-        org = r.get('org')
-        func = [w for w in content_words(it.get('function')) if w]
-        cid = it.get('client') if it.get('client') in clients.by_id else r.get('client')
-        new = people.resolve(it.get('new_owner') or '', org, func)
-        if cid and func and new:
-            store.add_fact('ownership', rid, day, canon_ts(r.get('at')), cid, {
-                'client': cid, 'function': func, 'person': new,
-                'prev': people.resolve(it.get('previous_owner') or '', org, func), 'author': r.get('author'),
-                'tier': people.tier(r.get('author')), 'via': 'announcement', 'sentence': (r.get('body') or '')[:300]})
-
-    fb = feedback.apply_day(store, day, people, resolver, llm)
+    pending = model_passes(store, llm, people, clients, {r['id']: r for r in rows}, day, promise_cands, owner_cands)
     store.set_meta('days', sorted(done | {day}))
     store.set_meta('last_day', max([day] + list(done)))
     store.out_clear()
     store.commit()
     return {'ok': True, 'day': day, 'records': len(rows), 'feedback': fb,
-            'model_calls': llm.calls, 'model_input_tokens': llm.input_tokens}
+            'model_calls': llm.calls, 'model_input_tokens': llm.input_tokens,
+            'model_calls_skipped': llm.skipped, 'model_pending': pending}
+
+
+# ------------------------------------------------------------------ model passes (with a backlog)
+PENDING_CAP = {'promises': 200, 'owners': 60}  # bounds the saved backlog, newest kept
+MAX_TRIES = 3  # a candidate the model could not answer is retried on this many later days, then dropped
+
+
+def _merge(old, new, cap):
+    seen, out = set(), []
+    for c in list(old) + list(new):
+        if c['id'] not in seen:
+            seen.add(c['id'])
+            out.append(c)
+    return out[-cap:]
+
+
+def model_passes(store, llm, people, clients, by_id, day, promise_cands, owner_cands):
+    """Language fallbacks: only messages the patterns flagged but could not read.
+
+    The model's time is capped per command (see llm.py). Whatever it cannot reach in time is saved
+    and retried at the next ingest, so a slow provider delays these facts instead of losing them.
+    Ownership goes first (few messages, high value), then promises.
+    """
+    if not llm.enabled:
+        return {'promises': 0, 'owners': 0}  # nothing to retry later without a model
+    saved = store.meta('pending_model', {}) or {}
+    tries = dict(saved.get('tries') or {})
+    prom = _merge(saved.get('promises') or [], promise_cands, PENDING_CAP['promises'])
+    own = _merge(saved.get('owners') or [], owner_cands, PENDING_CAP['owners'])
+
+    def rec_of(rid):
+        r = by_id.get(rid)
+        return (r, day) if r is not None else ((store.record(rid) or None), None)
+
+    found, left_o = owners.model_pass(llm, own, [c['id'] for c in clients.items])
+    for rid, it in found.items():
+        r, d = rec_of(rid)
+        if r is None:
+            continue
+        org = r.get('org')
+        func = [w for w in content_words(it.get('function')) if w]
+        cid = it.get('client') if it.get('client') in clients.by_id else r.get('client')
+        new = people.resolve(it.get('new_owner') or '', org, func)
+        if cid and func and new:
+            store.add_fact('ownership', rid, d or r.get('_day') or day, canon_ts(r.get('at')), cid, {
+                'client': cid, 'function': func, 'person': new,
+                'prev': people.resolve(it.get('previous_owner') or '', org, func), 'author': r.get('author'),
+                'tier': people.tier(r.get('author')), 'via': 'announcement', 'sentence': (r.get('body') or '')[:300]})
+    found, left_p = promises.model_pass(llm, prom)
+    for rid, got in found.items():
+        r, d = rec_of(rid)
+        if r is None:
+            continue
+        store.add_fact('promise', rid, d or r.get('_day') or day, canon_ts(r.get('at')), r.get('client'),
+                       {'what': got['what'], 'due': got['due'], 'owner': r.get('author'), 'via': 'model'})
+
+    keep = {'promises': [], 'owners': []}
+    new_tries = {}
+    for name, left in (('owners', left_o), ('promises', left_p)):
+        for c in left:
+            n = int(tries.get(c['id'], 0)) + 1
+            if n < MAX_TRIES:
+                keep[name].append(c)
+                new_tries[c['id']] = n
+    store.set_meta('pending_model', {'promises': keep['promises'], 'owners': keep['owners'], 'tries': new_tries})
+    return {'promises': len(keep['promises']), 'owners': len(keep['owners'])}

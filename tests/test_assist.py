@@ -525,6 +525,29 @@ class LLMTest(unittest.TestCase):
         s.close()
         self.clear_keys()
 
+    def test_openai_model_fallback(self):
+        import urllib.error
+        from assist.llm import LLM
+        from assist.store import Store
+        self.clear_keys()
+        os.environ['OPENAI_KEY'] = 'sk-test'
+        s = Store()
+        llm = LLM(s, 'ask', budget=4000)
+        tried = []
+        ok = {'choices': [{'message': {'content': '{"ok": true}'}}], 'usage': {'prompt_tokens': 9, 'completion_tokens': 2}}
+
+        def fake_post(body):
+            tried.append(body['model'])
+            if body['model'] in ('gpt-6-luna', 'gpt-5.4-mini'):
+                raise urllib.error.HTTPError('u', 404, 'model_not_found', {}, None)
+            return ok
+        llm._post = fake_post
+        self.assertEqual(llm.json_call('t', 'p <data>[]</data>', {'type': 'object', 'properties': {}}), {'ok': True})
+        self.assertEqual(tried, ['gpt-6-luna', 'gpt-5.4-mini', 'gpt-4o-mini'], 'no access: next model in the chain')
+        self.assertEqual(llm.model, 'gpt-4o-mini', 'the working model is remembered for later calls')
+        s.close()
+        self.clear_keys()
+
     def test_disabled_without_key(self):
         self.clear_keys()
         from assist.llm import LLM

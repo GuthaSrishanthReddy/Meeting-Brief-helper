@@ -13,6 +13,7 @@ import re
 
 from .common import STOP, content_words, norm_text, words
 from .llm import data_block
+from .store import Visible, records_of
 
 ACRONYM_STOP = set('''api uat sso tms qa pr eod eta faq sow cta ui ux seo kpi roi crm erp hr it pm am
 asap fyi ooo wfh mvp poc sla qbr usd inr gst pdf csv url aws gcp nda rfp rfq ceo cto coo cfo vp ok uk
@@ -86,16 +87,41 @@ def _subseq_abbrev(abbr, name):
     return True
 
 
+def abbreviations(body, client_name):
+    """Upper-case short forms in `body` that abbreviate `client_name` ("NB" for Northbeam Retail)."""
+    out = set()
+    for tok in re.findall(r'\b[A-Z][A-Z0-9]{1,4}\b', body or ''):
+        low = tok.lower()
+        if low not in ACRONYM_STOP and _subseq_abbrev(tok, client_name):
+            out.add(low)
+    return out
+
+
 class ClientResolver(object):
-    def __init__(self, clients, people, vis, llm=None):
+    def __init__(self, clients, people, vis, llm=None, abbrevs=None):
         self.clients = clients
         self.people = people
-        self.vis = vis or {}
+        self.vis = vis if vis is not None else {}
         self.llm = llm
+        self.abbrevs = abbrevs  # 'abbrev' facts visible to this person; None = scan the records instead
         self._cards = None
         self._learned = None
 
     # ------------------------------------------------------------ cards
+    def _count_address(self, card, a):
+        if not isinstance(a, str):
+            return
+        if a.startswith('ext:') and '@' in a:
+            card['domains'][a.split('@', 1)[1].lower()] += 1
+        elif a in self.people.by_id:
+            card['zones'][self.people.zone(a)] += 1
+
+    def _add_titles(self, card, r):
+        for fld in ('title', 'name', 'subject'):
+            t = r.get(fld)
+            if t and r.get('type') in ('event', 'doc', 'sheet') and t not in card['titles']:
+                card['titles'].append(t)
+
     def cards(self):
         if self._cards is not None:
             return self._cards
@@ -103,22 +129,27 @@ class ClientResolver(object):
         for c in self.clients.items:
             cards[c['id']] = {'name': c.get('name') or c['id'], 'domains': collections.Counter(),
                               'titles': [], 'zones': collections.Counter()}
-        for r in self.vis.values():
-            cid = r.get('client')
-            if cid not in cards or r.get('_kind') == 'notification':
-                continue
-            addrs = [r.get('author')] + list(r.get('to') or []) + list(r.get('attendees') or [])
-            for a in addrs:
-                if not isinstance(a, str):
+        if isinstance(self.vis, Visible):
+            # Authors come straight from the in-memory columns; only the few record types that carry
+            # attendees, recipients or titles are read in full.
+            for m in self.vis.light():
+                if m[7] in cards and m[3] != 'notification':
+                    self._count_address(cards[m[7]], m[6])
+            for r in self.vis.of_type('event', 'mail', 'doc', 'sheet'):
+                cid = r.get('client')
+                if cid not in cards or r.get('_kind') == 'notification':
                     continue
-                if a.startswith('ext:') and '@' in a:
-                    cards[cid]['domains'][a.split('@', 1)[1].lower()] += 1
-                elif a in self.people.by_id:
-                    cards[cid]['zones'][self.people.zone(a)] += 1
-            for fld in ('title', 'name', 'subject'):
-                t = r.get(fld)
-                if t and r.get('type') in ('event', 'doc', 'sheet') and t not in cards[cid]['titles']:
-                    cards[cid]['titles'].append(t)
+                for a in list(r.get('to') or []) + list(r.get('attendees') or []):
+                    self._count_address(cards[cid], a)
+                self._add_titles(cards[cid], r)
+        else:
+            for r in self.vis.values():
+                cid = r.get('client')
+                if cid not in cards or r.get('_kind') == 'notification':
+                    continue
+                for a in [r.get('author')] + list(r.get('to') or []) + list(r.get('attendees') or []):
+                    self._count_address(cards[cid], a)
+                self._add_titles(cards[cid], r)
         self._cards = cards
         return cards
 
@@ -127,14 +158,16 @@ class ClientResolver(object):
         if self._learned is not None:
             return self._learned
         out = collections.defaultdict(set)
-        for r in self.vis.values():
-            cid = r.get('client')
-            if cid not in self.clients.by_id or r.get('_kind') not in ('staff', 'client_external'):
-                continue
-            for tok in re.findall(r'\b[A-Z][A-Z0-9]{1,4}\b', r.get('body') or ''):
-                low = tok.lower()
-                if low not in ACRONYM_STOP and _subseq_abbrev(tok, self.clients.name(cid)):
-                    out[cid].add(low)
+        if self.abbrevs is not None:  # found once at ingest, kept as facts of their source records
+            for f in self.abbrevs:
+                if f.get('client') in self.clients.by_id and f.get('tok'):
+                    out[f['client']].add(f['tok'])
+        else:
+            for r in self.vis.values():
+                cid = r.get('client')
+                if cid not in self.clients.by_id or r.get('_kind') not in ('staff', 'client_external'):
+                    continue
+                out[cid].update(abbreviations(r.get('body'), self.clients.name(cid)))
         self._learned = out
         return out
 
@@ -257,8 +290,8 @@ def task_states(vis):
     the data, so they never overwrite state.
     """
     states = collections.OrderedDict()
-    for r in vis.values():
-        if r.get('type') != 'task' or not r.get('task_id'):
+    for r in records_of(vis, 'task'):
+        if not r.get('task_id'):
             continue
         tid = r['task_id']
         ch = r.get('change') if isinstance(r.get('change'), dict) else {}

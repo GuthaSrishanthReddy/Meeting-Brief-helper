@@ -22,6 +22,13 @@ Only JSON goes to stdout and logs go to stderr. The exit code is always 0, even 
 - The store is kept in `$R3_STORE`, else `./.assist_store/`. It holds `assist.db` (SQLite), the
   model usage log `usage.jsonl`, and the output and prompt caches. `ingest --day 1` starts it fresh.
 
+The records and extracted facts are the source of truth, because later briefs and answers need their
+history and citations. The output cache keeps up to 512 recent JSON results; the model cache keeps up
+to 512 successful structured responses. Model prompts are represented by a hash, not saved as text.
+Oldest cache entries are evicted first. A valid `forget` clears both caches so cached results cannot
+resurface the forgotten topic; the original source records remain in the local database and are
+filtered from that person's future results.
+
 Run the kit's harness and scorer from this folder:
 
 ```
@@ -37,7 +44,7 @@ python3 -m unittest discover -s tests -v
 |---|---|
 | Provider | Google Gemini API, REST `generateContent`. **Fallback provider:** OpenAI Chat Completions, used only when no Gemini key is set |
 | Network access needed | `generativelanguage.googleapis.com`, plus `api.openai.com` only if the OpenAI fallback is used |
-| OpenAI model | `gpt-6-luna` (override with `R3_OPENAI_MODEL`); strict JSON schema, `reasoning_effort: low`, no `temperature` |
+| OpenAI model | `gpt-6-luna` (override with `R3_OPENAI_MODEL`); strict JSON schema, `reasoning_effort: low`, no `temperature`. If the key has no access to it (HTTP 403/404), the program tries `gpt-5.4-mini`, then `gpt-4o-mini`, and remembers the one that works |
 | Model | `gemini-3.5-flash-lite` (override with `R3_MODEL`). `gemini-3.8-flash` was tried first but returned HTTP 503 and a timeout on test calls, so it is not the default |
 | Keys | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) and, as the fallback, `OPENAI_KEY` (or `OPENAI_API_KEY`). Put them in the environment or in a `.env` file next to `assist.py` (copy `.env.example`; real environment variables win; `.env` is git-ignored). Placeholder values such as `key_goes_here` are ignored |
 | Which one runs | The Gemini key if present, else the OpenAI key, else no model (code only). `R3_PROVIDER=openai` or `gemini` forces one |
@@ -61,6 +68,36 @@ for:
 Record text goes in as quoted JSON inside `<data>` tags, and the instructions say it is data. If
 there is no key, or a call fails, the code-only path answers. Calls time out at 25 s; 429, 5xx and
 timeouts are retried twice (1.5 s, 3 s) inside a 60 s deadline before falling back.
+
+### Time cap: a slow provider cannot eat the 120 s limit
+
+The harness kills a command at 120 s, and `ingest` only commits at the end, so a hung provider could
+lose a whole day. Each command therefore has a total model-time budget: **80 s for `ingest`, 45 s for
+`ask` and `brief`** (`R3_LLM_TOTAL=<seconds>` overrides both; `0` means never call the model). Every
+attempt's timeout shrinks to what is left, retries stop at the budget, and cache hits cost nothing.
+When the budget is gone the remaining model calls are skipped and code answers.
+
+Nothing is lost when ingest runs out of time: messages the model could not reach are saved (at most
+200 commitments and 60 ownership messages, newest kept) and retried at the next day's ingest, up to 3
+times. Facts found late keep the day of their source record. Feedback (preferences, corrections,
+forgets) is processed first and ownership before promises, so the most valuable work gets the time.
+
+Measured against a provider that hangs for 60 s on every request, with a 15 s budget: each `ingest`
+took 15.5 s and exited 0, and an odd-phrasing `ask` took 15.4 s and answered "I have nothing on that."
+Skipped calls are counted in the `ingest` output (`model_calls_skipped`, `model_pending`).
+
+### Running it with an OpenAI key (for the evaluator)
+
+Create a `.env` file next to `assist.py` (the repository does not contain one) with:
+
+```
+OPENAI_KEY="sk-..."
+```
+
+or set `OPENAI_KEY` / `OPENAI_API_KEY` in the environment. With no Gemini key present, the OpenAI
+key is used automatically. Only `api.openai.com` is contacted. Usage in every output and in
+`.assist_store/usage.jsonl` then shows the real OpenAI token counts. Without any key the program
+still runs, on code only, and scores the same on days 1 to 5.
 
 ## How tokens are counted
 
@@ -128,6 +165,56 @@ outputs the program produced while it was being built.
    Nov?". The questions are still templates built from the top blocker or date change; it earns no
    points but is checked for honesty.
 
+## Retrieval fallback for vague questions
+
+Rule-based flows and the model's intent mapping answer almost everything. When they all fail, a
+free-text question ("what did people say about the mobile layout?") goes through three steps:
+
+1. **Lexical search.** SQLite FTS5 (BM25 ranking, stemming) over the records that may ever be cited.
+   Notifications, newsletters and vendor mail are not indexed. The person's visibility gate is applied
+   inside the query (`Store.search`, using the same `row_allowed` as `visible()`), so another
+   person's private records, other companies' records and later-than-the-question records never come
+   back. Without FTS5, a scan over the visible records gives the same result.
+2. **Embedding re-rank (optional).** The question and only the top 16 candidates are embedded and the
+   two rankings are fused (reciprocal rank fusion). Nothing is embedded at ingest, so ingest cost does
+   not grow. Gemini: `gemini-embedding-001` with a per-request `RETRIEVAL_QUERY` / `RETRIEVAL_DOCUMENT`
+   task type; OpenAI: `text-embedding-3-small`, 256 dimensions (`R3_EMBED_MODEL` overrides). Vectors are
+   cached by text hash (at most 1,500, cleared on any forget). The call shares the command's time cap
+   and token budget; with no key, no budget left or any failure, the lexical order stands.
+3. **Answer.** The model reads the best four snippets as quoted data and answers from them only. Its
+   cited ids must be among those snippets, or the answer is dropped. Without a model, an extractive
+   answer is given only when one sentence covers at least 60% of the question's words (and at least two
+   of them). Otherwise the answer is "I have nothing on that."
+
+Every candidate is checked again by the guard (citable, not forgotten, not suppressed), and an answer
+that repeats a status such as "AT RISK" or "approved by client" is dropped, even if a message says it.
+
+What a live check showed: the right record's similarity beats the nearest wrong one by only a small
+margin (0.664 vs 0.599 with the task type, 0.614 vs 0.580 without), and `embedContentConfig.taskType`
+is silently ignored by the API while a per-request `taskType` is honoured. So embeddings only re-rank
+what BM25 found; they never decide on their own. On days 1 to 5 no question needs this path, so the
+score is unchanged (85.0/85) and all 39 outputs are identical with it on.
+
+## Scale
+
+Measured on the kit's volume cloned up (chat, mail, notification and document records, 5 days):
+
+| Records | Ingest per day | `brief` | `ask` |
+|---|---|---|---|
+| about 30,000 | 1.0 s (was 3 to 8 s, growing) | 0.5 s (was 0.8) | 0.4 s (was 0.9) |
+| about 150,000 | 4.1 to 5.3 s (was 72 to 202 s, over the 120 s limit) | 1.8 s (was 3.4) | 1.1 s (was 3.2) |
+
+What changed: document and sheet versions and events are found through an indexed `ref` column (ingest
+used to re-read every stored document for each new document, which grew with the square of the
+count); the full JSON of each record lives in its own table, and `visible()` returns a lightweight map
+that reads a record only when someone asks for it; facts are read per kind from an index; short forms
+like "NB" are learned once at ingest. Outputs were checked byte for byte against the earlier version
+(39 of 39 identical, ignoring timing). A store written by an older version is rebuilt automatically.
+
+Not yet measured: 1 million records or more, and memory use. Queries still read every visible
+record's small columns into memory, so memory grows linearly with the data. At the kit's own size
+(about 1,500 records) `brief` and `ask` report 0.1 to 0.3 s in `usage.ms`.
+
 ## Where this departs from the plan, and why
 
 - **Brief window.** The plan says the window runs "from the start of P's last meeting with the same
@@ -144,7 +231,9 @@ outputs the program produced while it was being built.
 ```
 assist.py            entry: ingest | brief | ask | forget; output cache; JSON-only, exit 0
 assist/
-  store.py           SQLite schema; visible(person, cutoff) lives here and only here
+  store.py           SQLite schema, indexes, the full-text index; visible(person, cutoff) and the
+                     one gate (row_allowed) live here and only here
+  retrieve.py        retrieval fallback for vague questions: FTS5/BM25, embedding re-rank, grounded answer
   ingest.py          classify, day mapping, decisions, client date requests, doc/sheet diffs
   promises.py        Hinglish/English commitment patterns, due dates, deliveries, model fallback
   owners.py          ownership statements, leave facts and expiry, precedence
@@ -154,8 +243,12 @@ assist/
   ask.py             question shapes, clarify, refuse
   guard.py           citation allow-list, stale / tombstone / suppression / invented-status checks
   common.py          paths, people, clients, time zones (zoneinfo or built-in rules), dates, text
-  llm.py             Gemini wrapper: budget, usage, prompt-hash cache, fallback
+  llm.py             Gemini / OpenAI wrapper: budget, time cap, usage, prompt-hash cache, embeddings
 tests/test_assist.py made-up pack: private and restricted records, zero leaks for every person,
                      forget, leave expiry, max N, blockers first, two Priyas, injection, other org,
                      a new person mid-run, unknown zone, the JSON contract, the model wrapper
+tests/test_retrieval.py  the retrieval fallback and its privacy traps (private, restricted, other
+                     company, newsletter, notification, later in time, forgotten, injected order)
+tests/test_time_cap.py   the per-command model-time cap and the retry backlog
+tests/test_extreme_edges.py  gate boundaries, cache limits, provider selection and retries
 ```

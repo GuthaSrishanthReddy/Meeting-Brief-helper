@@ -112,15 +112,17 @@ def remember_forget(store, person, text, day):
         return False
     store.remember(person, 'forget', norm_text(text) or text, entry, day)
     store.out_clear()
+    # Model results are prompt-hash keyed, so we cannot reliably identify every cache entry
+    # influenced by this topic. Flush that small bounded cache to honor forget across later calls.
+    store.llm_clear()
     return True
 
 
 def _event_client(store, meeting):
     if not meeting:
         return None
-    for r in store.ingest_rows("type='event'"):
-        if r.get('event_id') == meeting:
-            return r.get('client')
+    for r in store.versions('event', meeting):  # indexed by event id
+        return r.get('client')
     return None
 
 

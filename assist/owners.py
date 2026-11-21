@@ -223,16 +223,25 @@ OWNER_HINT = re.compile(r'\b(?:take|takes|taking|took)\s+over\b|\bown(?:s|er|ers
 
 
 def model_pass(llm, candidates, client_ids):
-    """Senior-role messages that hint at an ownership change but did not parse -> facts."""
+    """Senior-role messages that hint at an ownership change but did not parse.
+
+    Returns ({id: assignment}, left): the assignments found, and the candidates the model could not
+    answer for (time budget used up, provider down), so the caller can retry them later.
+    """
     if not llm or not llm.enabled or not candidates:
-        return {}
-    prompt = ('Some workplace messages may announce that a person now owns a function for a client (for '
-              'example billing). Questions are not announcements. For each message return is_assignment, '
-              'the client id (one of %s, or empty), the function in one or two words, and the new and previous '
-              'owner names exactly as written.\n%s' % (', '.join(client_ids), data_block(candidates)))
-    res = llm.json_call('ownership', prompt, SCHEMA, max_output=600)
-    out = {}
-    for it in (res or {}).get('items') or []:
-        if isinstance(it, dict) and it.get('is_assignment') and it.get('id'):
-            out[it['id']] = it
-    return out
+        return {}, []
+    out, left = {}, []
+    for i in range(0, len(candidates), 15):
+        batch = candidates[i:i + 15]
+        prompt = ('Some workplace messages may announce that a person now owns a function for a client (for '
+                  'example billing). Questions are not announcements. For each message return is_assignment, '
+                  'the client id (one of %s, or empty), the function in one or two words, and the new and '
+                  'previous owner names exactly as written.\n%s' % (', '.join(client_ids), data_block(batch)))
+        res = llm.json_call('ownership', prompt, SCHEMA, max_output=600)
+        if res is None:
+            left.extend(batch)
+            continue
+        for it in res.get('items') or []:
+            if isinstance(it, dict) and it.get('is_assignment') and it.get('id'):
+                out[it['id']] = it
+    return out, left

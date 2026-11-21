@@ -430,6 +430,17 @@ def sentences(text):
     return [p.strip() for p in parts if p and p.strip()]
 
 
+def record_text(r):
+    """All the readable text of a record: body, title, subject, name and sheet cell values."""
+    if not r:
+        return ''
+    parts = [r.get('body') or '', r.get('title') or '', r.get('subject') or '', r.get('name') or '']
+    cells = r.get('cells')
+    if isinstance(cells, dict):
+        parts.extend(str(v) for v in cells.values())
+    return '\n'.join(p for p in parts if p)
+
+
 def dedupe(seq):
     seen, out = set(), []
     for x in seq:

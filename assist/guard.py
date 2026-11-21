@@ -13,23 +13,13 @@
 """
 import re
 
-from .common import dedupe, fmt_dm, parse_day, words
+from .common import dedupe, fmt_dm, parse_day, record_text, words  # noqa: F401 - record_text re-exported
 from .feedback import topic_matches
 from .store import CITABLE_KINDS
 
 RISKY = ['at risk', 'approved by client', 'client approved', 'approved by the client', 'red flag', 'escalated',
          'on hold', 'churn']
 NOTHING = 'I have nothing on that.'
-
-
-def record_text(r):
-    if not r:
-        return ''
-    parts = [r.get('body') or '', r.get('title') or '', r.get('subject') or '', r.get('name') or '']
-    cells = r.get('cells')
-    if isinstance(cells, dict):
-        parts.extend(str(v) for v in cells.values())
-    return '\n'.join(p for p in parts if p)
 
 
 def value_in(value, text):

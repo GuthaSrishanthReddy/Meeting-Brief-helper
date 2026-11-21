@@ -18,6 +18,7 @@ from . import owners, promises
 from .clients import task_states
 from .common import Clients, dedupe, find_dates, fmt_dm, local_date, parse_day, parse_ts, words
 from .guard import Guard, build_superseded, history_from_facts, subject_words
+from .store import records_of
 from .llm import LLM
 
 GENERIC_BODIES = set(['done and shared', 'updated the file', 'small fixes done', 'pushed an update for review',
@@ -35,7 +36,7 @@ def day_of(store, d):
 
 def latest_events(vis):
     latest = {}
-    for r in vis.values():  # vis is in time order: a later record of the same event replaces it
+    for r in records_of(vis, 'event'):  # time order: a later record of the same event replaces it
         if r.get('type') == 'event' and r.get('event_id'):
             latest[r['event_id']] = r
     return latest

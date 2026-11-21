@@ -152,11 +152,13 @@ SCHEMA = {
 def model_pass(llm, candidates):
     """candidates: [{'id','text','local_date','weekday'}] the patterns could not parse.
 
-    Returns {id: {'what', 'due'}} for the ones the model judges to be a personal commitment.
+    Returns ({id: {'what', 'due'}}, left): the ones the model judges to be a personal commitment, and
+    the candidates it could not get an answer for (time budget used up, provider down), so the caller
+    can retry them later instead of losing them.
     """
     if not llm or not llm.enabled or not candidates:
-        return {}
-    out = {}
+        return {}, []
+    out, left = {}, []
     for i in range(0, len(candidates), 20):
         batch = candidates[i:i + 20]
         prompt = ('For each message decide if the author personally commits to deliver something by a time. '
@@ -165,11 +167,14 @@ def model_pass(llm, candidates):
                   'date: tomorrow/kal = +1 day, parso = +2, EOD/today = same day, "next <weekday>" = the first '
                   'such weekday after the message date. Otherwise is_promise=false.\n' + data_block(batch))
         res = llm.json_call('promises', prompt, SCHEMA, max_output=900)
-        for it in (res or {}).get('items') or []:
+        if res is None:
+            left.extend(batch)
+            continue
+        for it in res.get('items') or []:
             if not isinstance(it, dict) or not it.get('is_promise'):
                 continue
             due = parse_day(it.get('due'))
             what = _clean_what(it.get('what'))
             if it.get('id') and due and what:
                 out[it['id']] = {'what': what, 'due': due.isoformat()}
-    return out
+    return out, left

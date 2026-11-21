@@ -17,7 +17,7 @@ Question shapes, code first (in this order):
 import datetime as dt
 import re
 
-from . import owners, promises
+from . import owners, promises, retrieve
 from .clients import ClientResolver, match_tasks, pick_task, task_states
 from .common import (Clients, WEEKDAY_NUM, canon_ts, content_words, dedupe, find_dates, fmt_dm, fmt_dmy,
                      local_date, local_day_end_utc, parse_day, parse_ts, sentences, words)
@@ -80,7 +80,8 @@ class Ctx(object):
         self.zone = self.people.zone(person)
         self.today = local_date(self.at, self.zone)
         self.llm = LLM(store, 'ask', budget=4000)
-        self.resolver = ClientResolver(self.clients, self.people, self.vis, self.llm)
+        self.resolver = ClientResolver(self.clients, self.people, self.vis, self.llm,
+                                       abbrevs=store.facts(['abbrev'], self.vis))
         self.states = task_states(self.vis)
         self.forgets = store.memories(person, 'forget')
         self.suppress = store.memories(person, 'suppress')
@@ -316,8 +317,7 @@ def which_flow(ctx, first):
         for st in ctx.states.values():
             if st.get('owner') == pid and (cid is None or st.get('client') == cid):
                 s += 1
-        n = sum(1 for r in ctx.vis.values() if r.get('author') == pid and r.get('_kind') == 'staff'
-                and (cid is None or r.get('client') == cid))
+        n = sum(1 for m in ctx.vis.light(kinds=('staff',), author=pid) if cid is None or m[7] == cid)
         s += min(n, 4) * 0.25
         s += ctx.people.role_relevance(pid, qwords)
         scores[pid] = s
@@ -389,8 +389,8 @@ def privacy_flow(ctx, targets, say_match):
             return hits if hits >= need else 0
 
         best, best_score = None, 0
-        for r in ctx.vis.values():
-            if r.get('_kind') != 'staff' or ctx.blocked(r):
+        for r in ctx.vis.of_type(*STATEMENT_TYPES, kinds=('staff',)):
+            if ctx.blocked(r):
                 continue
             s = score(r)
             if s and s >= best_score:
@@ -440,9 +440,7 @@ def own_flow(ctx):
     if not topic:
         return None
     best, best_score = None, 0
-    for r in ctx.vis.values():
-        if r.get('author') != ctx.person or r.get('_kind') != 'staff' or r.get('type') not in ('chat', 'mail', 'note', 'doc'):
-            continue
+    for r in ctx.vis.of_type('chat', 'mail', 'note', 'doc', kinds=('staff',), author=ctx.person):
         if ctx.blocked(r):
             continue
         tw = set(words(record_text(r)))
@@ -525,6 +523,16 @@ def model_flow(ctx):
     return None
 
 
+def search_flow(ctx):
+    """Last resort for a vague question: retrieve the few best records (gated, citable) and answer from
+    them, or say nothing. See retrieve.py."""
+    got = retrieve.answer(ctx)
+    if not got:
+        return None
+    text, sources, _ = got
+    return ans(text, sources, ctx.client_matched())
+
+
 # ------------------------------------------------------------------ dispatcher
 def answer(ctx):
     q = ctx.q
@@ -578,6 +586,9 @@ def answer(ctx):
         if r:
             return r
     r = model_flow(ctx)
+    if r:
+        return r
+    r = search_flow(ctx)
     if r:
         return r
     if not ctx.client['ids'] and ctx.resolver.nickname_phrases(q) and field:

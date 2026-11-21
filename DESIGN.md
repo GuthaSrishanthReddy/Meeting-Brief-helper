@@ -52,6 +52,27 @@ One SQLite file holds the records, the facts derived from them (each keyed by it
 and per-person memory: preferences (max N changes, blockers first, skip lists), corrections,
 suppressions from "ignored" verdicts, and forgets.
 
+The raw records and sourced facts remain available for retrieval and citation; they are not sent to
+the model wholesale. Separate output and model-result caches are capped at 512 entries each. The
+model cache stores only successful structured responses under a hash of provider, model, prompt and
+schema, not the prompt itself. Oldest entries are evicted first. A valid forget clears both caches,
+then the per-person guard continues to suppress the topic from retained source records.
+
+Retrieval is deliberately layered. Exact fields (task owner, due date, status) are read by lookup. A
+vague free-text question that no rule answers goes through SQLite full-text search with the person's
+visibility gate inside the query; an embedding re-rank of the top candidates and a model answer
+grounded in the best snippets are optional layers on top, and each one is skipped cleanly when there
+is no key, no time or no budget. Nothing is embedded at ingest, so a bigger corpus costs no extra
+model calls, and the layers can only reorder or phrase what the gate already allowed.
+
+Scale was measured, not assumed: indexes on document versions and events, a lightweight visible-set
+that reads a record's JSON only on demand, and per-kind fact reads keep ingest at 4 to 5 s a day with
+about 30,000 records a day (146,000 over five days). Before, it grew past the 120 s limit by day 4.
+
+Model time is capped per command (80 s for ingest, 45 s for ask and brief), well under the 120 s
+limit. If the model cannot be reached in time, ingest saves the unprocessed messages in a small
+bounded backlog (at most 260 messages, retried at most 3 times) and finishes them on a later day.
+
 Every query reads records through one function, `Store.visible(person, cutoff)`. It applies the rules
 on company, team, private author and restricted readers, plus the time cutoff: days already ingested,
 and for questions nothing after the question's moment. Derived facts pass the same gate because they
