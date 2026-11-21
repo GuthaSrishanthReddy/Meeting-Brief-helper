@@ -105,6 +105,19 @@ def strictify(schema):
     return s
 
 
+def _env(name):
+    """An environment variable, matched exactly first and then ignoring case. A .env that says
+    `openai_key=...` must work on Linux, where variable names are case-sensitive."""
+    v = os.environ.get(name)
+    if v:
+        return v
+    up = name.upper()
+    for k, val in os.environ.items():
+        if k.upper() == up and val:
+            return val
+    return None
+
+
 def clean_key(value):
     v = (value or '').strip().strip('"\'')
     return '' if not v or v.lower() in PLACEHOLDERS else v
@@ -116,7 +129,7 @@ class LLM(object):
         self.context = context
         self.budget = budget
         load_dotenv()  # keys can live in .env; real environment variables win
-        env = os.environ.get
+        env = _env
         self.gemini_key = clean_key(env('GEMINI_API_KEY')) or clean_key(env('GOOGLE_API_KEY'))
         self.openai_key = clean_key(env('OPENAI_KEY')) or clean_key(env('OPENAI_API_KEY'))
         want = (env('R3_PROVIDER') or '').lower()
@@ -290,23 +303,50 @@ class LLM(object):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode('utf-8'))
 
+    def _compat_stages(self):
+        """Ever plainer versions of the request, tried in turn when a model answers 400.
+
+        OpenAI: (1) drop reasoning_effort and use plain JSON mode instead of a strict schema;
+        (2) as plain as it gets: the older `system` role, no response_format at all (the prompt
+        already says JSON only, and the reply is parsed leniently). Gemini: drop the schema and
+        thinking settings."""
+        def openai_plain_json(body):
+            body.pop('reasoning_effort', None)
+            if (body.get('response_format') or {}).get('type') == 'json_schema':
+                body['response_format'] = {'type': 'json_object'}
+
+        def openai_bare(body):
+            body.pop('reasoning_effort', None)
+            body.pop('response_format', None)
+            for m in body.get('messages') or []:
+                if m.get('role') == 'developer':
+                    m['role'] = 'system'
+
+        def gemini_plain(body):
+            gen = body.get('generationConfig') or {}
+            gen.pop('responseJsonSchema', None)
+            gen.pop('thinkingConfig', None)
+        return [openai_plain_json, openai_bare] if self.provider == 'openai' else [gemini_plain]
+
     def _post_json_compat(self, body):
-        """Retry a 400 once with optional JSON/thinking settings removed."""
+        """Send the request; on a 400, retry with each plainer version in turn."""
         try:
             return self._post_retry(body)
         except urllib.error.HTTPError as e:
             if e.code != 400:
                 raise
+            last = e
             self._close_http_error(e)
-            if self.provider == 'openai':
-                body.pop('reasoning_effort', None)
-                if (body.get('response_format') or {}).get('type') == 'json_schema':
-                    body['response_format'] = {'type': 'json_object'}
-            else:
-                gen = body.get('generationConfig') or {}
-                gen.pop('responseJsonSchema', None)
-                gen.pop('thinkingConfig', None)
-            return self._post_retry(body)
+        for stage in self._compat_stages():
+            stage(body)
+            try:
+                return self._post_retry(body)
+            except urllib.error.HTTPError as e:
+                if e.code != 400:
+                    raise
+                last = e
+                self._close_http_error(e)
+        raise last
 
     @staticmethod
     def _json_object(text):
@@ -386,7 +426,14 @@ class LLM(object):
         t0 = time.time()
         vectors, tin, err = None, 0, None
         try:
-            data = self._post_retry(body, post=self._embed_post)
+            try:
+                data = self._post_retry(body, post=self._embed_post)
+            except urllib.error.HTTPError as e:
+                if e.code != 400 or 'dimensions' not in body:
+                    raise
+                self._close_http_error(e)
+                body.pop('dimensions')  # a model that rejects `dimensions` still embeds, with longer vectors
+                data = self._post_retry(body, post=self._embed_post)
             if self.provider == 'openai':
                 rows = sorted(data.get('data') or [], key=lambda d: d.get('index', 0))
                 vectors = [d.get('embedding') for d in rows]

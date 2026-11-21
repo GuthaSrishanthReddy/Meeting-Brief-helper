@@ -94,8 +94,21 @@ Create a `.env` file next to `assist.py` (the repository does not contain one) w
 OPENAI_KEY="sk-..."
 ```
 
-or set `OPENAI_KEY` / `OPENAI_API_KEY` in the environment. With no Gemini key present, the OpenAI
-key is used automatically. Only `api.openai.com` is contacted. Usage in every output and in
+or set `OPENAI_KEY` / `OPENAI_API_KEY` in the environment. Variable names are matched ignoring case,
+so `openai_key=...` works too. With no Gemini key present, the OpenAI key is used automatically.
+
+**What has and has not been verified for OpenAI.** The machine that built this had no OpenAI key, so
+the real API has never answered a request from this program. What was tested instead
+(`tests/test_openai_http.py`, 13 tests): the real HTTP client against a strict local fake of the API
+that enforces Bearer auth, OpenAI's strict structured-output schema rules (every schema the program
+uses passes), valid parameter values and the JSON-mode rule, and that can refuse models and features
+or fail with 503; the fake endpoint URLs were also checked against the real `api.openai.com`
+(an invalid key correctly gets a 401). If the real API rejects a request with a 400, it is retried in
+plainer forms (no `reasoning_effort` with plain JSON mode, then the `system` role with no
+`response_format`); a model the key cannot use (403/404) is replaced by the next in the chain
+(`gpt-6-luna`, `gpt-5.4-mini`, `gpt-4o-mini`); an embeddings call that rejects `dimensions` is retried
+without it. If everything fails, the program answers from code alone, which scores the same on days 1
+to 5. The one thing only a real key can show is that OpenAI itself accepts the request. Only `api.openai.com` is contacted. Usage in every output and in
 `.assist_store/usage.jsonl` then shows the real OpenAI token counts. Without any key the program
 still runs, on code only, and scores the same on days 1 to 5.
 
@@ -199,10 +212,13 @@ score is unchanged (85.0/85) and all 39 outputs are identical with it on.
 
 Measured on the kit's volume cloned up (chat, mail, notification and document records, 5 days):
 
-| Records | Ingest per day | `brief` | `ask` |
+| Records over the 5 days | Ingest per day | `brief` | `ask` |
 |---|---|---|---|
-| about 30,000 | 1.0 s (was 3 to 8 s, growing) | 0.5 s (was 0.8) | 0.4 s (was 0.9) |
-| about 150,000 | 4.1 to 5.3 s (was 72 to 202 s, over the 120 s limit) | 1.8 s (was 3.4) | 1.1 s (was 3.2) |
+| 29,332 (about 5,900 a day) | 1.0 s (was 3 to 8 s, growing) | 0.5 s (was 0.8) | 0.4 s (was 0.9) |
+| 146,132 (about 29,000 a day) | 4.1 to 5.3 s (was 72 to 202 s, over the 120 s limit) | 1.8 s (was 3.4) | 1.1 s (was 3.2) |
+
+The "was" figures are the same test on the code before the SQL fixes; the new figures include the
+full-text index, which adds roughly 20% to ingest (3.6 to 4.4 s a day without it at the larger size).
 
 What changed: document and sheet versions and events are found through an indexed `ref` column (ingest
 used to re-read every stored document for each new document, which grew with the square of the

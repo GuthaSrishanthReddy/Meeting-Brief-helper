@@ -293,6 +293,23 @@ class EmbeddingTests(Base):
         self.assertEqual(llm.input_tokens, 12)
         self.assertAlmostEqual(llm.cost, 12 * 0.02 / 1e6)
 
+    def test_openai_retries_without_dimensions_when_they_are_rejected(self):
+        os.environ.pop('GEMINI_API_KEY', None)
+        os.environ['OPENAI_KEY'] = 'sk-test'
+        llm = LLM(self.store, 'ask', budget=4000)
+        sent = []
+
+        def fake_post(body):
+            sent.append(dict(body))
+            if 'dimensions' in body:
+                raise urllib.error.HTTPError('u', 400, 'dimensions not supported', {}, None)
+            return {'data': [{'index': 0, 'embedding': [1.0, 2.0, 3.0]}], 'usage': {'prompt_tokens': 3}}
+        llm._embed_post = fake_post
+        self.assertEqual(llm.embed(['hello']), [[1.0, 2.0, 3.0]])
+        self.assertEqual(len(sent), 2)
+        self.assertIn('dimensions', sent[0])
+        self.assertNotIn('dimensions', sent[1])
+
     def test_gemini_request_shape_and_estimated_usage(self):
         llm = LLM(self.store, 'ask', budget=4000)
         sent = []
